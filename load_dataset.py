@@ -158,7 +158,10 @@ class VideoData(BasicDataset):
 
         self.spatial_info = {}
         for i in range(1, 301):
-            _, frame = cap.read()
+            ret, frame = cap.read()
+            #print(frame.shape)
+            if not ret:
+                frame = np.zeros((480, 640, 3), np.uint8)
             if i in self.subsampled_indices:
                 bbox_info = this_video_bbox_df[this_video_bbox_df.frame == i]
                 if len(bbox_info) == 0:
@@ -169,8 +172,8 @@ class VideoData(BasicDataset):
                                               'angle': 0,
                                               'score': 0
                                               }, columns=['frame','x','y','width','angle','score'], index=[0])
-                lmarks_info = this_video_lmarks_df.iloc[i]
-                egaze_info = this_video_egaze_df.iloc[i]
+                lmarks_info = this_video_lmarks_df.iloc[i-1]
+                egaze_info = this_video_egaze_df.iloc[i-1]
                 
                 self.spatial_info[i] = FrameData(i,
                                                  frame,
@@ -198,10 +201,10 @@ class VideoData(BasicDataset):
         t1 = spatial_info[j]
         temporal_dict = {
             "frame": t1.frame_224 - t0.frame_224,
-            "bbox_img": 10 * (t1.bbox_224 - t0.bbox_224),
-            "bbox_loc": t1.bbox_loc - t0.bbox_loc,
-            "lmarks": t1.lmarks - t0.lmarks,
-            "egaze": t1.egaze - t0.egaze
+            "bbox_img": 100 * (t1.bbox_224 - t0.bbox_224),
+            "bbox_loc": 100 * (t1.bbox_loc - t0.bbox_loc),
+            "lmarks": 100 * (t1.lmarks - t0.lmarks),
+            "egaze": 100 * (t1.egaze - t0.egaze)
         }
         return temporal_dict
 

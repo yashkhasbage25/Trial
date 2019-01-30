@@ -2,8 +2,129 @@ import torch
 import itertools
 
 import torch.nn as nn
-import torchvision.transforms.functional as F
+import torch.utils.model_zoo as model_zoo
+import torch.nn.functional as F
 
+from collections import OrderedDict
+
+class _DenseLayer(nn.Sequential):
+    def __init__(self, num_input_features, growth_rate, bn_size, drop_rate):
+        super(_DenseLayer, self).__init__()
+        self.add_module('norm1', nn.BatchNorm2d(num_input_features)),
+        self.add_module('relu1', nn.ReLU(inplace=True)),
+        self.add_module('conv1', nn.Conv2d(num_input_features, bn_size *
+                        growth_rate, kernel_size=1, stride=1, bias=False)),
+        self.add_module('norm2', nn.BatchNorm2d(bn_size * growth_rate)),
+        self.add_module('relu2', nn.ReLU(inplace=True)),
+        self.add_module('conv2', nn.Conv2d(bn_size * growth_rate, growth_rate,
+                        kernel_size=3, stride=1, padding=1, bias=False)),
+        self.drop_rate = drop_rate
+
+    def forward(self, x):
+        new_features = super(_DenseLayer, self).forward(x)
+        if self.drop_rate > 0:
+            new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
+        return torch.cat([x, new_features], 1)
+
+
+class _DenseBlock(nn.Sequential):
+    def __init__(self, num_layers, num_input_features, bn_size, growth_rate, drop_rate):
+        super(_DenseBlock, self).__init__()
+        for i in range(num_layers):
+            layer = _DenseLayer(num_input_features + i * growth_rate, growth_rate, bn_size, drop_rate)
+            self.add_module('denselayer%d' % (i + 1), layer)
+
+
+class _Transition(nn.Sequential):
+    def __init__(self, num_input_features, num_output_features):
+        super(_Transition, self).__init__()
+        self.add_module('norm', nn.BatchNorm2d(num_input_features))
+        self.add_module('relu', nn.ReLU(inplace=True))
+        self.add_module('conv', nn.Conv2d(num_input_features, num_output_features,
+                                          kernel_size=1, stride=1, bias=False))
+        self.add_module('pool', nn.AvgPool2d(kernel_size=2, stride=2))
+
+
+class DenseNet(nn.Module):
+    r"""Densenet-BC model class, based on
+    `"Densely Connected Convolutional Networks" <https://arxiv.org/pdf/1608.06993.pdf>`_
+    Args:
+        growth_rate (int) - how many filters to add each layer (`k` in paper)
+        block_config (list of 4 ints) - how many layers in each pooling block
+        num_init_features (int) - the number of filters to learn in the first convolution layer
+        bn_size (int) - multiplicative factor for number of bottle neck layers
+          (i.e. bn_size * k features in the bottleneck layer)
+        drop_rate (float) - dropout rate after each dense layer
+        num_classes (int) - number of classification classes
+    """
+
+    def __init__(self, growth_rate=32, block_config=(6, 12, 24, 16),
+                 num_init_features=64, bn_size=4, drop_rate=0, num_classes=1000):
+
+        super(DenseNet, self).__init__()
+
+        # First convolution
+        self.features = nn.Sequential(OrderedDict([
+            ('conv0', nn.Conv2d(3, num_init_features, kernel_size=7, stride=2, padding=3, bias=False)),
+            ('norm0', nn.BatchNorm2d(num_init_features)),
+            ('relu0', nn.ReLU(inplace=True)),
+            ('pool0', nn.MaxPool2d(kernel_size=3, stride=2, padding=1)),
+        ]))
+
+        # Each denseblock
+        num_features = num_init_features
+        for i, num_layers in enumerate(block_config):
+            block = _DenseBlock(num_layers=num_layers, num_input_features=num_features,
+                                bn_size=bn_size, growth_rate=growth_rate, drop_rate=drop_rate)
+            self.features.add_module('denseblock%d' % (i + 1), block)
+            num_features = num_features + num_layers * growth_rate
+            if i != len(block_config) - 1:
+                trans = _Transition(num_input_features=num_features, num_output_features=num_features // 2)
+                self.features.add_module('transition%d' % (i + 1), trans)
+                num_features = num_features // 2
+
+        # Final batch norm
+        self.features.add_module('norm5', nn.BatchNorm2d(num_features))
+
+        # Linear layer
+        self.classifier = nn.Linear(num_features, num_classes)
+
+        # Official init from torch repo.
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        features = self.features(x)
+        out = F.relu(features, inplace=True)
+        out = F.adaptive_avg_pool2d(out, (1, 1)).view(features.size(0), -1)
+        # print(out.shape)
+        return out
+        out = self.classifier(out)
+        return out
+
+
+def densenet121(pretrained_weights=False, **kwargs):
+    r"""Densenet-121 model from
+    `"Densely Connected Convolutional Networks" <https://arxiv.org/pdf/1608.06993.pdf>`_
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = DenseNet(num_init_features=64, growth_rate=32, block_config=(6, 12, 24, 16),
+                     **kwargs)
+    if pretrained_weights:
+        # '.'s are no longer allowed in module names, but pervious _DenseLayer
+        # has keys 'norm.1', 'relu.1', 'conv.1', 'norm.2', 'relu.2', 'conv.2'.
+        # They are also in the checkpoints in model_urls. This pattern is used
+        # to find such keys.
+
+        model.load_state_dict(state_dict)
+    return model
 
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
@@ -162,6 +283,27 @@ def resnet18(pretrained_weights=None, **kwargs):
     """
     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained_weights:
+        model.load_state_dict(model_zoo.load_url())
+        #model.load_state_dict(pretrained_weights)
+    return model
+
+def resnet50(pretrained_weights=True, **kwargs):
+    """Constructs a ResNet-50 model.
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    if pretrained_weights:
+        model.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth'))
+    return model.cuda()
+
+def resnet101(pretrained_weights=None, **kwargs):
+    """Constructs a ResNet-101 model.
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
+    if pretrained_weights:
         model.load_state_dict(pretrained_weights)
     return model
 
@@ -221,7 +363,7 @@ class DRMLLayer(nn.Module):
         self.conv7 = nn.Conv2d(16, 16, kernel_size=(5, 5))
         self.conv8 = nn.Conv2d(16, 16, kernel_size=(3, 3), stride=3)
         self.fc = nn.Linear(1024, 512)
-        self.region_layer = RegionLayer(4, 4, 160, 160).cuda()
+        self.region_layer = RegionLayer(16, 16, 160, 160).cuda()
 
     def forward(self, x):
         x = self.conv1(x)
@@ -238,11 +380,123 @@ class DRMLLayer(nn.Module):
         return x
 
 
+class NanoExpression(nn.Module):
+
+    def __init__(self, samples):
+        super(NanoExpression, self).__init__()
+        self.bbox_resnet = resnet50().cuda()
+        self.drml_layer = DRMLLayer().cuda()
+
+        self.egaze_lin = nn.Linear(4, 10)
+        self.lmarks_lin = nn.Linear(188, 30)
+        self.bbox_lin = nn.Linear(2560, 60)
+        self.fc = nn.Linear(100, 4)
+        self.smax = nn.Softmax(dim=1)
+        self.n_samples = samples
+            
+    def forward(self, x):
+        #print(x[0][1].shape, x[1]["bbox_img"].shape)=[1,94], [1,3,224,224]
+        x_bb = torch.cat([self.drml_layer(x[0][0]).unsqueeze_(0), self.bbox_resnet(x[1]["bbox_img"])], dim=1)
+        x_bb = self.bbox_lin(x_bb)
+
+        x_lm = torch.cat([x[0][1], x[1]["lmarks"]], dim=1)
+        x_lm = self.lmarks_lin(x_lm)
+                        
+        x_eg = torch.cat([x[0][2], x[1]["egaze"]], dim=1)
+        x_eg = self.egaze_lin(x_eg)    
+        return torch.cat([x_bb, x_lm, x_eg], dim=1).view(1, 100)
+        
+
+class MicroExpression(nn.Module):
+
+    def __init__(self, samples):
+
+        super(MicroExpression, self).__init__()
+        self.samples = samples
+        self.nano_expr = NanoExpression(self.samples)
+        self.conv1 = nn.Conv1d(30, 1, 1)
+
+    def forward(self, x):
+        indices = x[0].keys()
+        x = torch.cat([self.nano_expr([x[0][i], x[1][i]]) for i in indices])
+        x = x.view(1, 30, 100)
+        x = self.conv1(x)
+        return x
+        
+
+class DAiSEEMicroExpressionModel(nn.Module):
+
+    def __init__(self, micro_divisions, n_frames):
+        super(DAiSEEMicroExpressionModel, self).__init__()
+        #self.bbox_resnet = resnet50().cuda()
+        #self.bbox_resnet_2 = resnet18(pretrained_weights=pretrained_weights)
+        self.drml_layer = DRMLLayer().cuda()
+        self.micro_divisions = micro_divisions
+        self.n_frames = n_frames
+        self.micro_width = self.n_frames // self.micro_divisions
+        #self.egaze_lin = nn.Linear(4, 10)
+        #self.lmarks_lin = nn.Linear(188, 30)
+        #self.bbox_lin = nn.Linear(2560, 60)
+        self.fc = nn.Linear(100, 4)
+        #self.mu_expression = MicroExpression(self.micro_rate)
+        self.lstm = nn.LSTM(100, 100).cuda()
+        self.h0 = torch.randn(1, 1, 100).cuda()
+        self.c0 = torch.randn(1, 1, 100).cuda()
+        self.smax = nn.Softmax(dim=1)
+        self.micro_expression = MicroExpression(self.micro_width)
+        self.micro_indices = [i for i in range(self.micro_width)]
+        
+    def subsampling_rate2_indices(self, rate, start_index=1, n_frames=300):
+
+        return [i for i in range(start_index, n_frames+1, rate)]
+
+    def forward(self, x):
+
+        self.h0.detach_()
+        self.c0.detach_()
+        for i in self.micro_indices:
+
+            nano_indices = [i * self.micro_width + j + 1 for j in range(self.micro_width)]
+            x_nano = [{j: x[0][j] for j in nano_indices}, 
+                      {j: x[1][j] for j in nano_indices}]
+            #print(nano_indices)
+            #print(x_nano)
+            #print(x_nano[0][nano_indices[0]][0].shape,
+            #		x_nano[0][nano_indices[0]][1].shape,
+            #		x_nano[0][nano_indices[0]][2].shape)
+            #print(x_nano[1][nano_indices[0]]["bbox_img"].shape,
+            #		x_nano[1][nano_indices[0]]["lmarks"].shape,
+            #		x_nano[1][nano_indices[0]]["egaze"].shape)
+            		            		 
+            lstm_outputs, (self.h0, self.c0) = self.lstm(
+                    self.micro_expression(x_nano).view(1, 1, 100), (self.h0, self.c0))
+            #x_bb = torch.cat([self.drml_layer(x[0][i][0]).unsqueeze_(0), self.bbox_resnet_1(x[1][i]["bbox_img"])], dim=1)
+            #x_bb = self.bbox_lin(x_bb)
+
+            #x_lm = torch.cat([x[0][i][1], x[1][i]["lmarks"]], dim=1)
+            #x_lm = self.lmarks_lin(x_lm)
+
+            #x_eg = torch.cat([x[0][i][2], x[1][i]["egaze"]], dim=1)
+            #x_eg = self.egaze_lin(x_eg)
+            #return x_eg[:,0:4]
+            #lstm_outputs, (self.h0, self.c0) = self.lstm(
+            #        torch.cat([x_bb, x_lm, x_eg], dim=1).view(1,1,100), (self.h0, self.c0))
+            
+
+        assert lstm_outputs.shape == (1, 1, 100)
+        lstm_outputs = lstm_outputs.view(1, 100)
+        lstm_outputs = self.fc(lstm_outputs)
+        lstm_outputs = self.smax(lstm_outputs)
+
+        # TODO: 4 lstms???
+
+        return lstm_outputs
+
 class DAiSEEModel(nn.Module):
 
     def __init__(self, subsample_rate, pretrained_weights=None):
         super(DAiSEEModel, self).__init__()
-        self.bbox_resnet_1 = resnet18(pretrained_weights=pretrained_weights).cuda()
+        self.bbox_resnet = resnet18(pretrained_weights=pretrained_weights).cuda()
         #self.bbox_resnet_2 = resnet18(pretrained_weights=pretrained_weights)
         self.drml_layer = DRMLLayer().cuda()
 
@@ -288,4 +542,5 @@ class DAiSEEModel(nn.Module):
 
         # TODO: 4 lstms???
 
-        return lstm_outputs
+        return lstm_outputs	
+	

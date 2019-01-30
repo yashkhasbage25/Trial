@@ -14,13 +14,13 @@ import matplotlib.pyplot as plt
 import torch.optim.lr_scheduler as lr_scheduler
 
 from load_dataset import DAiSEEDataset
-from daisee_model import DAiSEEModel
+from daisee_model import DAiSEEMicroExpressionModel
 
 # CUDA_VISIBLE_DEVICES=2,3 python3 train_on_daisee.py --loss smoothl1 --optim adam --it 201 --epochs 1000000 --subsample_rate 10 --affection Confusion
 def parse_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--loss', type=str, choices=['mse', 'l1', 'smoothl1'], required=True)
+    parser.add_argument('--loss', type=str, choices=['mse', 'l1', 'smoothl1', "ce"], required=True)
     parser.add_argument('--optim', type=str,
                 choices=['adam', 'adadelta', 'adagrad', 'sgd', 'rmsprop'], required=True)
     parser.add_argument('--dataset_dir', type=str, default='.')
@@ -31,6 +31,8 @@ def parse_args():
     parser.add_argument('--subsample_rate', type=int, default=10)
     parser.add_argument('--it', type=str, required=True)
     parser.add_argument('--out', action='store_true')
+    parser.add_argument('--weights', type=str, default=None)
+    parser.add_argument('--cmnt', type=str, default=None)
 
     return parser.parse_args()
 
@@ -54,9 +56,17 @@ class L1Loss(nn.Module):
         assert y.shape == (1, 4)
         return torch.mean(torch.abs(yhat - y))
 
-def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, num_epochs=25):
+def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, num_epochs=25, weights=None):
+#def train_model(model, criterion, optimizer, optim_name, loss_name, num_epochs=25, weights=None):
     since = time.time()
+    if args.cmnt:
+    	print(args.cmnt)
     dataset_sizes = {"Train":5358, "Validation": 1429}
+    if weights:
+        assert osp.exists(weights)
+        checkpoint = torch.load(weights)
+        model.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
     best_model_wts = copy.deepcopy(model.state_dict())
     best_opt_params = copy.deepcopy(optimizer.state_dict())
     best_acc = 0.0
@@ -107,11 +117,12 @@ def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, n
                     outputs=model(inputs)
                     
                     _, preds=torch.max(outputs, 1)
-                    loss=criterion(outputs, labels)
-
+                    #print(labels, torch.max(labels,1)[1])
+                    loss=criterion(outputs, torch.max(labels,1)[1])
+                    #loss = criterion(outputs, labels)
                     # backward + optimize only if in training phase
                     if phase == 'Train':
-                        pass
+                        
                         loss.backward()
                         optimizer.step()
 
@@ -181,19 +192,19 @@ def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, n
 
 
 if __name__ == '__main__':
-    #pdb.set_trace()
+    pdb.set_trace()
     args=parse_args()
     dataloaders={
             "Train": data.DataLoader(
                                         DAiSEEDataset(args.dataset_dir,
                                         args.affection, "Train", args.subsample_rate),
                         batch_size=1, shuffle=False,
-                        num_workers=32),
+                        num_workers=1),
             "Validation": data.DataLoader(
                                         DAiSEEDataset(args.dataset_dir,
                                         args.affection, "Validation", args.subsample_rate),
                         batch_size=1, shuffle=False,
-                        num_workers=32)
+                        num_workers=1)
         }
 
 
@@ -209,18 +220,19 @@ if __name__ == '__main__':
     losses = {
         "mse": nn.MSELoss(),
         "l1": nn.L1Loss(), 
-        "smoothl1": nn.SmoothL1Loss()
+        "smoothl1": nn.SmoothL1Loss(),
+        "ce": nn.CrossEntropyLoss(weight=torch.FloatTensor([1,3,5,50]).cuda())
     }
     optimizer_name = args.optim
     loss_name = args.loss
     loss_func = losses[args.loss]
 
-    model = DAiSEEModel(args.subsample_rate)
+    model = DAiSEEMicroExpressionModel(10, 300)
     model = model.cuda()
     num_epochs = args.epochs
 
     if optimizer_name == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=0.00000025, weight_decay=0.1)
+        optimizer = optim.Adam(model.parameters(), lr=0.0000001, weight_decay=0.001)
     elif optimizer_name == 'adagrad':
         optimizer = optim.Adagrad(model.parameters(), lr=0.00000025, weight_decay=0.1)
     elif optimizer_name == 'adadelta':
@@ -228,9 +240,10 @@ if __name__ == '__main__':
     elif optimizer_name == 'rmsprop':
         optimizer = optim.RMSprop(model.parameters(), lr=0.00000025, momentum=0.98, weight_decay=0.1)
     elif optimizer_name == 'sgd':
-        optimizer = optim.SGD(model.parameters(), momentum=0.98, weight_decay=0.1)
+        optimizer = optim.SGD(model.parameters(), lr=0.0000001, momentum=0, weight_decay=0.1)
 
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.75)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.1)
 
     optimizer.zero_grad()
-    train_model(model, loss_func, optimizer, scheduler, optimizer_name, loss_name, num_epochs)
+    #train_model(model, loss_func, optimizer, optimizer_name, loss_name, num_epochs, weights=args.weights)
+    train_model(model, loss_func, optimizer, scheduler, optimizer_name, loss_name, num_epochs, weights=args.weights)
