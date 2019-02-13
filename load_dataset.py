@@ -57,6 +57,7 @@ class BasicDataset:
         assert osp.exists(self.lmarks_split_dir)
         assert osp.exists(self.egaze_split_dir)
 
+
 class FrameData(BasicDataset):
 
     def __init__(self, frame_num, frame_mat, video_df, bbox_dir, bbox_df, lmarks_df, egaze_df, dataset_dir):
@@ -77,8 +78,10 @@ class FrameData(BasicDataset):
         # self.bbox_transforms = transforms.Compose(
         #     [transforms.Resize([224, 224]), normalize, transforms.ToTensor()])
 
-        self.transforms_non_delta = transforms.Compose([transforms.Resize([170, 170]), transforms.ToTensor()])
-        self.transforms_delta = transforms.Compose([transforms.Resize([224, 224]), transforms.ToTensor()])
+        self.transforms_non_delta = transforms.Compose(
+            [transforms.Resize([170, 170]), transforms.ToTensor()])
+        self.transforms_delta = transforms.Compose(
+            [transforms.Resize([224, 224]), transforms.ToTensor()])
 
         # these are features
         self.frame_224 = self.transforms_delta(self.frame)
@@ -89,9 +92,9 @@ class FrameData(BasicDataset):
         self.bbox_loc = self.scale_bbox_df()
         self.lmarks = self.scale_lmarks()
         self.egaze = self.scale_egaze()
-        
+
     def load_bbox_img(self):
-        
+
         bbox_path = osp.join(self.bbox_split_dir, osp.splitext(self.video_df["ClipID"])[0])
         assert osp.exists(bbox_path), print(bbox_path)
         bbox_path = osp.join(bbox_path, str(self.frame_num)+'.jpg')
@@ -100,10 +103,9 @@ class FrameData(BasicDataset):
         return self.load_pil_img(bbox_path)
 
     def load_pil_img(self, path):
-         with open(path, 'rb') as f:
+        with open(path, 'rb') as f:
             with Image.open(f) as img:
-                return img.convert('RGB')     
-        
+                return img.convert('RGB')
 
     def cvt_cv_to_pil(self, frame_mat):
 
@@ -159,7 +161,7 @@ class VideoData(BasicDataset):
         self.spatial_info = {}
         for i in range(1, 301):
             ret, frame = cap.read()
-            #print(frame.shape)
+            # print(frame.shape)
             if not ret:
                 frame = np.zeros((480, 640, 3), np.uint8)
             if i in self.subsampled_indices:
@@ -171,10 +173,10 @@ class VideoData(BasicDataset):
                                               'width': 0,
                                               'angle': 0,
                                               'score': 0
-                                              }, columns=['frame','x','y','width','angle','score'], index=[0])
+                                              }, columns=['frame', 'x', 'y', 'width', 'angle', 'score'], index=[0])
                 lmarks_info = this_video_lmarks_df.iloc[i-1]
                 egaze_info = this_video_egaze_df.iloc[i-1]
-                
+
                 self.spatial_info[i] = FrameData(i,
                                                  frame,
                                                  video_df,
@@ -194,7 +196,6 @@ class VideoData(BasicDataset):
 
         self.temporal_info[subsampled_indices[0]] = copy.deepcopy(
             self.temporal_info[subsampled_indices[1]])
-        
 
     def make_diff(self, spatial_info, i, j):
         t0 = spatial_info[i]
@@ -211,12 +212,13 @@ class VideoData(BasicDataset):
 
 class DAiSEEDataset(BasicDataset):
 
-    def __init__(self, dataset_dir, affection, split_group, subsample_rate=3):
+    def __init__(self, dataset_dir, affection, split_group, subsample_rate=3, batch=1):
 
         BasicDataset.__init__(self, dataset_dir, split_group)
         self.subsample_rate = subsample_rate
         self.split_group = split_group
         self.affection = affection
+        self.batch_size = batch
 
         assert self.split_group in ["Test", "Train", "Validation"]
         assert self.affection in ["Engagement", "Boredom", "Confusion", "Frustration"]
@@ -252,8 +254,9 @@ class DAiSEEDataset(BasicDataset):
         selection = self.labels_df.iloc[index]
         video_info = VideoData(selection, self.base_dir, self.subsampled_indices)
         label = self.one_hot(selection[self.affection])
-        spatial_info = {i: [video_info.spatial_info[i].bbox_170, video_info.spatial_info[i].lmarks, video_info.spatial_info[i].egaze] for i in self.subsampled_indices}
+        spatial_info = {i: [video_info.spatial_info[i].bbox_170, video_info.spatial_info[i].lmarks,
+                            video_info.spatial_info[i].egaze] for i in self.subsampled_indices}
         temporal_info = video_info.temporal_info
         del video_info
-        
+
         return [(spatial_info, temporal_info), label]

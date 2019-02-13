@@ -17,24 +17,28 @@ from load_dataset import DAiSEEDataset
 from daisee_model import DAiSEEMicroExpressionModel
 
 # CUDA_VISIBLE_DEVICES=2,3 python3 train_on_daisee.py --loss smoothl1 --optim adam --it 201 --epochs 1000000 --subsample_rate 10 --affection Confusion
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--loss', type=str, choices=['mse', 'l1', 'smoothl1', "ce"], required=True)
     parser.add_argument('--optim', type=str,
-                choices=['adam', 'adadelta', 'adagrad', 'sgd', 'rmsprop'], required=True)
+                        choices=['adam', 'adadelta', 'adagrad', 'sgd', 'rmsprop'], required=True)
     parser.add_argument('--dataset_dir', type=str, default='.')
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--affection', type=str,
-                choices=["Engagement", "Boredom", "Confusion", "Frustration"], required=True)
+                        choices=["Engagement", "Boredom", "Confusion", "Frustration"], required=True)
     parser.add_argument('--labels_dir', type=str, default='.')
     parser.add_argument('--subsample_rate', type=int, default=10)
     parser.add_argument('--it', type=str, required=True)
     parser.add_argument('--out', action='store_true')
     parser.add_argument('--weights', type=str, default=None)
+    parser.add_argument('--batch', type=int, default=8)
     parser.add_argument('--cmnt', type=str, default=None)
 
     return parser.parse_args()
+
 
 class MSELoss(nn.Module):
 
@@ -46,6 +50,7 @@ class MSELoss(nn.Module):
         assert y.shape == (1, 4)
         return torch.mean(torch.sum((yhat-y)**2))
 
+
 class L1Loss(nn.Module):
 
     def __init__(self):
@@ -56,12 +61,14 @@ class L1Loss(nn.Module):
         assert y.shape == (1, 4)
         return torch.mean(torch.abs(yhat - y))
 
+
 def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, num_epochs=25, weights=None):
-#def train_model(model, criterion, optimizer, optim_name, loss_name, num_epochs=25, weights=None):
+    # def train_model(model, criterion, optimizer, optim_name, loss_name, num_epochs=25, weights=None):
     since = time.time()
+
     if args.cmnt:
-    	print(args.cmnt)
-    dataset_sizes = {"Train":5358, "Validation": 1429}
+        print(args.cmnt)
+    dataset_sizes = {"Train": 5358, "Validation": 1429}
     if weights:
         assert osp.exists(weights)
         checkpoint = torch.load(weights)
@@ -73,17 +80,19 @@ def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, n
     print("optim_name:", optim_name)
     print("loss_name:", loss_name)
     loss_list = {"Train": [], "Validation": []}
-    device = torch.device('cuda') 
+    device = torch.device('cuda')
 
     for epoch in range(num_epochs):
-        fig=plt.figure()
-        ax=fig.add_subplot(111)
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
         ax.set_xlabel(r'epochs')
         ax.set_ylabel(r'loss')
         ax.set_title(optim_name+" + "+loss_name)
         ax.set_ylim(bottom=0)
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
         print('-' * 10)
+
+        confusion = [[0, 0, 0, 0] for _ in range(4)]
 
         for phase in ['Train', 'Validation']:
             if phase == 'Train':
@@ -92,8 +101,8 @@ def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, n
             else:
                 model.eval()   # Set model to evaluate mode
 
-            running_loss=0.0
-            running_corrects=0
+            running_loss = 0.0
+            running_corrects = 0
 
             # Iterate over data.
             for sample_number, (inputs, labels) in enumerate(dataloaders[phase]):
@@ -102,7 +111,7 @@ def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, n
                     v[0] = v[0].to(device).detach()
                     v[1] = v[1].to(device).detach()
                     v[2] = v[2].to(device).detach()
-                labels=labels.to(device).detach()
+                labels = labels.to(device).detach()
                 for k, v in inputs[1].items():
                     v["bbox_img"] = v["bbox_img"].to(device).detach()
                     v["egaze"] = v["egaze"].to(device).detach()
@@ -114,31 +123,34 @@ def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, n
                 # track history if only in train
                 with torch.set_grad_enabled(phase == 'Train'):
 
-                    outputs=model(inputs)
-                    
-                    _, preds=torch.max(outputs, 1)
+                    outputs = model(inputs)
+
+                    _, preds = torch.max(outputs, 1)
+                    truth_class = torch.max(labels, 1)[1]
+                    if phase == 'Validation':
+                        confusion[truth_class][preds] += 1
                     #print(labels, torch.max(labels,1)[1])
-                    loss=criterion(outputs, torch.max(labels,1)[1])
+                    loss = criterion(outputs, truth_class)
                     #loss = criterion(outputs, labels)
                     # backward + optimize only if in training phase
                     if phase == 'Train':
-                        
+
                         loss.backward()
                         optimizer.step()
 
                 # statistics
-                #if phase == 'Train':
+                # if phase == 'Train':
                 #    running_loss += loss.item()
-                #else:
+                # else:
                 #    running_loss += loss.item()
                 running_loss += loss.item()
                 running_corrects += torch.sum(preds.data == torch.max(labels, 1)[1])
-                #if sample_number % 200 == 0:
+                # if sample_number % 200 == 0:
                 print(sample_number, "running_loss", running_loss)
-                #print(sample_number)
-                #print(sample_number, "running_loss", running_loss)
-            epoch_loss=running_loss / dataset_sizes[phase]
-            epoch_acc=running_corrects.double() / dataset_sizes[phase]
+                # print(sample_number)
+                # print(sample_number, "running_loss", running_loss)
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_acc = running_corrects.double() / dataset_sizes[phase]
 
             print('{} Loss: {:.4f} Acc: {:.4f}'.format(
                 phase, epoch_loss, epoch_acc))
@@ -147,29 +159,32 @@ def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, n
 
             # deep copy the model
             if phase == 'Validation' and epoch_acc > best_acc:
-                best_acc=epoch_acc
-                best_model_wts=copy.deepcopy(model.state_dict())
+                best_acc = epoch_acc
+                best_model_wts = copy.deepcopy(model.state_dict())
                 best_opt_params = copy.deepcopy(optimizer.state_dict())
-            plt.plot([i for i in range(len(loss_list["Train"]))], loss_list["Train"], label = 'Train')
-            plt.plot([i for i in range(len(loss_list["Validation"]))], loss_list["Validation"], label = 'Validation')
-            time_elapsed=time.time() - since
+            plt.plot([i for i in range(len(loss_list["Train"]))], loss_list["Train"], label='Train')
+            plt.plot([i for i in range(len(loss_list["Validation"]))],
+                     loss_list["Validation"], label='Validation')
+            time_elapsed = time.time() - since
+            print(confusion)
             print('Training complete in {:.0f}m {:.0f}s'.format(
                 time_elapsed // 60, time_elapsed % 60))
             print('Best val Acc: {:4f}'.format(best_acc))
 
             # load best model weights
 
-            plt.legend(loc = 'best', fancybox = True, shadow = True)
+            plt.legend(loc='best', fancybox=True, shadow=True)
             ax.grid()
             plt.tight_layout()
             plt.savefig(osp.join(log_dir, "{:}_{:}_{:}.png".format(
                 args.affection, optim_name, loss_name)))
             plt.clf()
             print('-'*10)
-            
+
         model.load_state_dict(best_model_wts)
         optimizer.load_state_dict(best_opt_params)
-        torch.save({"model":model.state_dict(), "optimizer":optimizer.state_dict()}, "{:}_{:}_{:}_{:}.pth".format(args.it, args.affection, optimizer_name, loss_name))
+        torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict()},
+                   "{:}_{:}_{:}_{:}.pth".format(args.it, args.affection, optimizer_name, loss_name))
         print('-'*10)
     # print(loss_list["train"])
     # print(loss_list["val"])
@@ -192,21 +207,20 @@ def train_model(model, criterion, optimizer, scheduler, optim_name, loss_name, n
 
 
 if __name__ == '__main__':
-    pdb.set_trace()
-    args=parse_args()
-    dataloaders={
-            "Train": data.DataLoader(
-                                        DAiSEEDataset(args.dataset_dir,
-                                        args.affection, "Train", args.subsample_rate),
-                        batch_size=1, shuffle=False,
-                        num_workers=1),
-            "Validation": data.DataLoader(
-                                        DAiSEEDataset(args.dataset_dir,
-                                        args.affection, "Validation", args.subsample_rate),
-                        batch_size=1, shuffle=False,
-                        num_workers=1)
-        }
-
+    # pdb.set_trace()
+    args = parse_args()
+    dataloaders = {
+        "Train": data.DataLoader(
+            DAiSEEDataset(args.dataset_dir,
+                          args.affection, "Train", args.subsample_rate, batch=args.batch),
+            batch_size=args.batch, shuffle=False,
+            num_workers=32),
+        "Validation": data.DataLoader(
+            DAiSEEDataset(args.dataset_dir,
+                          args.affection, "Validation", args.subsample_rate, batch=args.batch),
+            batch_size=args.batch, shuffle=False,
+            num_workers=32)
+    }
 
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
@@ -215,35 +229,46 @@ if __name__ == '__main__':
     if not osp.exists(log_dir):
         os.mkdir(log_dir)
     if args.out:
-        sys.stdout = open(osp.join(log_dir, "%s_%s_%s.txt"%(args.affection, args.loss, args.optim)), mode='w+')
+        sys.stdout = open(osp.join(log_dir, "%s_%s_%s.txt" %
+                                   (args.affection, args.loss, args.optim)), mode='w+')
     # dataset_dir = args.dataset_dir
+    if args.affection == 'Engagement':
+        ce_weights = [200, 10, 1, 1]
+    elif args.affection == 'Boredom':
+        ce_weights = [1, 1, 2, 20]
+    elif args.affection == 'Confusion':
+        ce_weights = [1, 3, 10, 50]
+    elif args.affection == 'Frustration':
+        ce_weights = [1, 5, 10, 50]
     losses = {
         "mse": nn.MSELoss(),
-        "l1": nn.L1Loss(), 
+        "l1": nn.L1Loss(),
         "smoothl1": nn.SmoothL1Loss(),
-        "ce": nn.CrossEntropyLoss(weight=torch.FloatTensor([1,3,5,50]).cuda())
+        "ce": nn.CrossEntropyLoss(weight=torch.FloatTensor(ce_weights).cuda())
     }
     optimizer_name = args.optim
     loss_name = args.loss
     loss_func = losses[args.loss]
 
-    model = DAiSEEMicroExpressionModel(10, 300)
+    model = DAiSEEMicroExpressionModel(10, args.subsample_rate, 300, batch=args.batch)
     model = model.cuda()
     num_epochs = args.epochs
 
     if optimizer_name == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=0.0000001, weight_decay=0.001)
+        optimizer = optim.Adam(model.parameters(), lr=0.0000001, weight_decay=0.0005)
     elif optimizer_name == 'adagrad':
         optimizer = optim.Adagrad(model.parameters(), lr=0.00000025, weight_decay=0.1)
     elif optimizer_name == 'adadelta':
         optimizer = optim.Adadelta(model.parameters(), lr=0.000025, weight_decay=0.1)
     elif optimizer_name == 'rmsprop':
-        optimizer = optim.RMSprop(model.parameters(), lr=0.00000025, momentum=0.98, weight_decay=0.1)
+        optimizer = optim.RMSprop(model.parameters(), lr=0.00000025,
+                                  momentum=0.98, weight_decay=0.1)
     elif optimizer_name == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=0.0000001, momentum=0, weight_decay=0.1)
 
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.1)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     optimizer.zero_grad()
     #train_model(model, loss_func, optimizer, optimizer_name, loss_name, num_epochs, weights=args.weights)
-    train_model(model, loss_func, optimizer, scheduler, optimizer_name, loss_name, num_epochs, weights=args.weights)
+    train_model(model, loss_func, optimizer, scheduler, optimizer_name,
+                loss_name, num_epochs, weights=args.weights)
